@@ -331,8 +331,21 @@ void usercheck(void)
 }
 
 int Core::start( int argc, char **argv ){
+#ifdef OTEL_ALLOW_TRACING
+	nostd::shared_ptr<trace_api::Span> span = this->m_tracer->StartSpan( "Core::start" );
+	span->SetAttribute( "server.name", this->get_server_name() );
+#endif
+
 	if( this->get_status() != e_core_status::NOT_STARTED) {
 		ShowFatalError( "Core was already started and cannot be started again!\n" );
+
+#ifdef OTEL_ALLOW_TRACING
+		span->SetAttribute( "error", true );
+		span->SetAttribute( "error.details", "Core was already started and cannot be started again!" );
+		span->SetStatus( trace_api::StatusCode::kError );
+		span->End();
+#endif
+
 		return EXIT_FAILURE;
 	}
 
@@ -371,17 +384,20 @@ int Core::start( int argc, char **argv ){
 #endif
 
 	this->set_status( e_core_status::CORE_INITIALIZED );
-
 	this->set_status( e_core_status::SERVER_INITIALIZING );
+
 	if( !this->initialize( argc, argv ) ){
+#ifdef OTEL_ALLOW_TRACING
+		if ( span != nullptr && span->IsRecording() ) span->End();
+#endif
 		return EXIT_FAILURE;
 	}
 
 	// If initialization did not trigger shutdown
 	if( this->m_status != e_core_status::STOPPING ){
 		this->set_status( e_core_status::SERVER_INITIALIZED );
-
 		this->set_status( e_core_status::RUNNING );
+
 #ifndef MINICORE
 		if( !this->m_run_once ){
 			// Main runtime cycle
@@ -392,14 +408,15 @@ int Core::start( int argc, char **argv ){
 			}
 		}
 #endif
+
 		this->set_status( e_core_status::STOPPING );
 	}
 
 	this->set_status( e_core_status::SERVER_FINALIZING );
 	this->finalize();
 	this->set_status( e_core_status::SERVER_FINALIZED );
-
 	this->set_status( e_core_status::CORE_FINALIZING );
+
 #ifndef MINICORE
 	timer_final();
 	socket_final();
@@ -411,18 +428,35 @@ int Core::start( int argc, char **argv ){
 	this->set_status( e_core_status::CORE_FINALIZED );
 
 #if defined(BUILDBOT)
-	if( buildbotflag ){
+	if ( buildbotflag ){
+#ifdef OTEL_ALLOW_TRACING
+		if ( span != nullptr && span->IsRecording() ) span->End();
+#endif
 		exit(EXIT_FAILURE);
 	}
 #endif
 
 	this->set_status( e_core_status::STOPPED );
 
+#ifdef OTEL_ALLOW_TRACING
+	if ( span != nullptr && span->IsRecording() ) span->End();
+#endif
+
 	return EXIT_SUCCESS;
 }
 
 bool Core::initialize( int argc, char* argv[] ){
-	// Do nothing
+#ifdef OTEL_ALLOW_TRACING
+	auto exporter = otlp::OtlpHttpExporterFactory::Create();
+	auto processor = trace_sdk::SimpleSpanProcessorFactory::Create( std::move( exporter ) );
+
+	std::shared_ptr<trace_api::TracerProvider> provider =
+		trace_sdk::TracerProviderFactory::Create( std::move( processor ) );
+
+	trace_api::Provider::SetTracerProvider( provider );
+
+	this->m_tracer = provider->GetTracer(this->get_tracer_name());
+#endif
 	return true;
 }
 
@@ -442,18 +476,47 @@ void Core::handle_shutdown(){
 }
 
 void Core::finalize(){
-	// Do nothing
+#ifdef OTEL_ALLOW_TRACING
+	this->m_tracer = nullptr;
+#endif
 }
 
 void Core::set_status( e_core_status status ){
+#ifdef OTEL_ALLOW_TRACING
+	auto span = this->m_tracer->StartSpan( "Core::set_status" );
+	span->SetAttribute( "server.core.status", this->get_status_name(status) );
+	span->SetAttribute( "server.core.status_value", (int16)status );
+#endif
 	this->m_status = status;
+#ifdef OTEL_ALLOW_TRACING
+	span->End();
+#endif
 }
 
-e_core_status Core::get_status(){
+e_core_status Core::get_status() {
 	return this->m_status;
 }
 
-e_core_type Core::get_type(){
+std::string Core::get_status_name( e_core_status status ) {
+	switch ( status )
+	{
+		case e_core_status::NOT_STARTED:		  return "NOT_STARTED";
+		case e_core_status::CORE_INITIALIZING:	  return "CORE_INITIALIZING";
+		case e_core_status::CORE_INITIALIZED:	  return "CORE_INITIALIZED";
+		case e_core_status::SERVER_INITIALIZING:  return "SERVER_INITIALIZING";
+		case e_core_status::SERVER_INITIALIZED:	  return "SERVER_INITIALIZED";
+		case e_core_status::RUNNING:			  return "RUNNING";
+		case e_core_status::STOPPING:			  return "STOPPING";
+		case e_core_status::SERVER_FINALIZING:	  return "SERVER_FINALIZING";
+		case e_core_status::SERVER_FINALIZED:	  return "SERVER_FINALIZED";
+		case e_core_status::CORE_FINALIZING:	  return "CORE_FINALIZING";
+		case e_core_status::CORE_FINALIZED:		  return "CORE_FINALIZED";
+		case e_core_status::STOPPED:			  return "STOPPED";
+		default:								  return "UNKNOWN_STATUS";
+	}
+}
+
+e_core_type Core::get_type() {
 	return this->m_type;
 }
 
@@ -478,7 +541,13 @@ void Core::signal_crash(){
 
 }
 
-void Core::signal_shutdown(){
+void Core::signal_shutdown() {
 	this->set_status( e_core_status::STOPPING );
+
+#ifdef OTEL_ALLOW_TRACING
+	nostd::shared_ptr<trace_api::Span> span = this->m_tracer->GetCurrentSpan();
+	span->SetStatus( trace_api::StatusCode::kError );
+#endif
+
 	this->handle_shutdown();
 }

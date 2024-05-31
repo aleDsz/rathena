@@ -22,6 +22,21 @@
 	extern int buildbotflag;
 #endif
 
+#ifdef OTEL_ALLOW_TRACING
+	#include "opentelemetry/exporters/otlp/otlp_http_exporter_factory.h"
+	#include "opentelemetry/exporters/otlp/otlp_http_exporter_options.h"
+	#include "opentelemetry/sdk/trace/exporter.h"
+	#include "opentelemetry/sdk/trace/processor.h"
+	#include "opentelemetry/sdk/trace/simple_processor_factory.h"
+	#include "opentelemetry/sdk/trace/tracer_provider_factory.h"
+	#include "opentelemetry/trace/provider.h"
+
+	namespace nostd = opentelemetry::nostd;
+	namespace otlp = opentelemetry::exporter::otlp;
+	namespace trace_api = opentelemetry::trace;
+	namespace trace_sdk = opentelemetry::sdk::trace;
+#endif
+
 #define UNKNOWN_VERSION '\x02'
 
 extern char *SERVER_NAME;
@@ -63,6 +78,9 @@ namespace rathena{
 				e_core_type m_type;
 				bool m_run_once;
 				bool m_crashed;
+#ifdef OTEL_ALLOW_TRACING
+				nostd::shared_ptr<trace_api::Tracer> m_tracer;
+#endif
 
 			protected:
 				virtual bool initialize( int argc, char* argv[] );
@@ -70,6 +88,12 @@ namespace rathena{
 				virtual void finalize();
 				virtual void handle_crash();
 				virtual void handle_shutdown();
+#ifdef OTEL_ALLOW_TRACING
+				virtual nostd::string_view get_tracer_name();
+				nostd::shared_ptr<trace_api::Tracer> get_tracer();
+				std::string get_server_name();
+#endif
+				std::string get_status_name( e_core_status status );
 				void set_status( e_core_status status );
 
 			public:
@@ -87,7 +111,7 @@ namespace rathena{
 				void set_run_once( bool run_once );
 				void signal_crash();
 				void signal_shutdown();
-				int start( int argc, char* argv[] );
+				int start( int argc, char **argv );
 		};
 	}
 }
